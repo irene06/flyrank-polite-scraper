@@ -4,6 +4,7 @@ from datetime import datetime
 from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
+import json
 
 BASE_URL = "https://books.toscrape.com/catalogue/"
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
@@ -137,11 +138,14 @@ def main():
         if record:
             raw_records.append(record)
 
-    print("\n--- CHECKPOINT STAGE 3 ---")
-    print(f"Total registros extraídos: {len(raw_records)}")
-    if raw_records:
-        print("Ejemplo de registro extraído:")
-        print(raw_records[0])
+    # Guardar todos los registros en un archivo JSON final
+    output_file = "books_dataset.json"
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(raw_records, f, ensure_ascii=False, indent=4)
+    print(f"\n[EXPORT] Dataset guardado exitosamente en {output_file}")
+
+    print("\n--- CHECKPOINT STAGE FINAL ---")
+    print(f"Total registros extraídos y guardados: {len(raw_records)}")
 
 if __name__ == "__main__":
     main()
