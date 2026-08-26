@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime
 from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
@@ -12,10 +13,9 @@ def fetch_and_cache(url, filename):
     os.makedirs("cache", exist_ok=True)
     if os.path.exists(filename):
         with open(filename, "r", encoding="utf-8") as f:
-            return f.read(), True # True indica que vino de caché
+            return f.read(), True
 
-    # Esperar al menos 500ms entre peticiones reales por politeness
-    time.sleep(0.5)
+    time.sleep(0.5) # Pausa de cortesía
     print(f"FETCH: Requesting {url}")
     headers = {"User-Agent": USER_AGENT}
     
@@ -36,37 +36,33 @@ def fetch_and_cache(url, filename):
     return html_content, False
 
 def discover_catalogue_and_books():
-    catalogue_pages_count = 0
-    unique_book_urls = set()
+    unique_book_data = [] # Guardará tuplas de (book_url, source_page_url)
+    seen_urls = set()
     
     current_url = START_URL
     page_num = 1
 
-    # Queremos recorrer las 3 primeras páginas del catálogo
     while current_url and page_num <= 3:
         cache_filename = f"cache/catalogue-page-{page_num}.html"
-        html_content, from_cache = fetch_and_cache(current_url, cache_filename)
+        html_content, _ = fetch_and_cache(current_url, cache_filename)
         
         if not html_content:
             break
 
-        catalogue_pages_count += 1
-        source_label = "CACHE HIT" if from_cache else "FETCH SUCCESS"
-        print(f"{source_label}: Page {page_num} loaded.")
-
-        # Parsear con Beautiful Soup
         soup = BeautifulSoup(html_content, "html.parser")
-
-        # Extraer enlaces de los libros en esta página
-        # En Books to Scrape, cada libro está en <article class="product_pod"> -> <h3> -> <a>
+        
+        # Encontrar libros y su página de origen
         book_pods = soup.select("article.product_pod h3 a")
         for book_a in book_pods:
             relative_href = book_a.get("href")
-            # Convertir URL relativa a absoluta de forma segura usando urljoin
             absolute_url = urljoin(current_url, relative_href)
-            unique_book_urls.add(absolute_url)
+            if absolute_url not in seen_urls:
+                seen_urls.add(absolute_url)
+                unique_book_data.append({
+                    "book_url": absolute_url,
+                    "source_page": current_url
+                })
 
-        # Buscar el enlace "next" para la siguiente página de catálogo
         next_button = soup.select_one("li.next a")
         if next_button:
             next_href = next_button.get("href")
@@ -75,12 +71,77 @@ def discover_catalogue_and_books():
         else:
             current_url = None
 
-    print("\n--- CHECKPOINT STAGE 2 ---")
-    print(f"catalogue_pages = {catalogue_pages_count}")
-    print(f"discovered = {len(unique_book_urls)}")
-    print(f"unique_urls = {len(unique_book_urls)}")
+    return unique_book_data
 
-    return unique_book_urls
+def extract_book_details(book_info, index):
+    book_url = book_info["book_url"]
+    source_page = book_info["source_page"]
+    
+    # Archivo de caché individual para cada libro para evitar re-descargas
+    cache_filename = f"cache/book-{index}.html"
+    html_content, _ = fetch_and_cache(book_url, cache_filename)
+    
+    if not html_content:
+        return None
+
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # 1. Título
+    title_el = soup.select_one("div.product_main h1")
+    title = title_el.get_text(strip=True) if title_el else "N/A"
+
+    # 2. Precio
+    price_el = soup.select_one("div.product_main p.price_color")
+    price = price_el.get_text(strip=True) if price_el else "N/A"
+
+    # 3. Disponibilidad
+    availability_el = soup.select_one("div.product_main p.instock.availability")
+    availability = availability_el.get_text(strip=True) if availability_el else "N/A"
+
+    # 4. Calificación (Rating) - viene en una clase CSS tipo "star-rating Three"
+    rating_el = soup.select_one("div.product_main p.star-rating")
+    rating = "N/A"
+    if rating_el:
+        classes = rating_el.get("class", [])
+        # La segunda clase usualmente indica el número en texto (One, Two, Three...)
+        rating = [c for c in classes if c != "star-rating"]
+        rating = rating[0] if rating else "N/A"
+
+    # 5. Descripción
+    # En books.toscrape, la descripción suele estar en un div con id "product_description" seguido de un <p>
+    desc_el = soup.select_one("#product_description ~ p")
+    description = desc_el.get_text(strip=True) if desc_el else "N/A"
+
+    record = {
+        "title": title,
+        "url": book_url,
+        "price": price,
+        "availability": availability,
+        "rating": rating,
+        "description": description,
+        "source_page": source_page,
+        "scraped_at": datetime.utcnow().isoformat() + "Z"
+    }
+
+    return record
+
+def main():
+    print("--- INICIANDO DESCUBRIMIENTO DE CATÁLOGO ---")
+    books_meta = discover_catalogue_and_books()
+    print(f"Libros descubiertos: {len(books_meta)}")
+
+    print("\n--- INICIANDO EXTRACCIÓN DE REGISTROS DE LIBROS ---")
+    raw_records = []
+    for idx, meta in enumerate(books_meta, start=1):
+        record = extract_book_details(meta, idx)
+        if record:
+            raw_records.append(record)
+
+    print("\n--- CHECKPOINT STAGE 3 ---")
+    print(f"Total registros extraídos: {len(raw_records)}")
+    if raw_records:
+        print("Ejemplo de registro extraído:")
+        print(raw_records[0])
 
 if __name__ == "__main__":
-    discover_catalogue_and_books()
+    main()
